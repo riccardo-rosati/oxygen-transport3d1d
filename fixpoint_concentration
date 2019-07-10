@@ -1,0 +1,262 @@
+scalar_type estimating_error (vector_type Ct_new, vector_type Ct_old, vector_type Cv_new, vector_type Cv_old)
+{
+	scalar_type norm2_Tnew = gmm::vect_norm2(Ct_new);
+	scalar_type norm2_Told = gmm::vect_norm2(Ct_old);
+	scalar_type error_T = (norm2_Tnew - norm2_Told);
+
+	scalar_type norm2_Vnew = gmm::vect_norm2(Cv_new);
+	scalar_type norm2_Vold = gmm::vect_norm2(Cv_old);
+	scalar_type error_V = (norm2_Vnew - normV2_old);
+
+	return error_T/norm2_Told + error_V/norm2_Vold;
+}
+
+bool transport3d1d::solve_fixpoint(void)
+{
+/*  solver 
+//1- use solve_transp() to obtain the initial guess C0 as starting solution for the iterative method
+2- Declaration of variables
+3- Iterative Process
+			a-update the matrices of AM_transp
+			b-1 find the new solution as AM_transp(k-1)*UM_transp(k) = FM_transp(k)
+			c-reaction term
+			d- check residuals Rk: the iterative procedure ends when either maximum number of iteration is reached or the residuals of method are less than a pre-established value. 
+			To this purpose RESIDUAL IS DEFINED:
+				I-solution residual=||ct(k)-ct(k-1)||/||ct(k-1)||+||cv(k)-cv(k-1)||/||cv(k-1)||< epsilon1
+					with || V || Euclidean norm
+			e- Update the value of Ct(k-1) with Ct(k)
+						-Every N iteration the solution is saved
+
+
+*/
+// 1 - risolvo il sistema una volta; per trovare il valore di Ct iniziale
+	bool RK;
+	RK = solve_transp(); //come output ho UM_transp iniziale 
+
+// 2 - declaration of variables
+
+	//vettori per la concentrazione
+	vector_type Ct_new(dof_transp.Ct()); gmm::clear(Ct_new);	//Ct(k)
+	vector_type Ct_old(dof_transp.Ct()); gmm::clear(Ct_old);	//Ct(k-1)
+
+	vector_type Cv_new(dof_transp.Cv()); gmm::clear(Cv_new);	//Cv(k)
+	vector_type Cv_old(dof_transp.Cv()); gmm::clear(Cv_old);	//Cv(k-1)
+
+	sparse_matrix_type mat_temp (dof_transp.Ct(), dof_transp.ct()); gmm::clear(mat_temp); //matrice temporanea per calcolare le matrici per il tessuto
+	sparse_matrix_type Rt_temp (dof_transp.Ct(), dof_transp.ct()); gmm::clear(Rt_temp); //matrice temporanea per il termine di reazione
+	vector_type Ov_temp (dof_transp.Cv()); gmm::clear(Ov);
+
+
+	//impongo un residuo: dal file descr.hpp di fluid_ht_curvature
+	bool print_res=descr.print_residual;
+
+	scalar_type resSol=descr.epsSol;	//residuo massimo per la soluzione
+	scalar_type max_iteration=descr.Max_it;	//numero mx di iterazioni
+
+	int iteration_save=descr.Save_it;
+
+	int iteration=0;
+	int err = 1; 
+
+	
+
+	// Gnuplot gp;
+	//vector_type RES_SOL(max_iteration);
+
+	//salvo la soluzione iniziale in Ct_old e in Cv_old
+	gmm::copy(gmm::sub_vector(UM_transp,
+				gmm::sub_interval(0, dof_transp.Ct()), Ct_old);
+	gmm::copy(gmm::sub_vector(UM_transp,
+				gmm::sub_interval(dof_transp.Ct(), dof_transp.Cv()), Cv_old);
+
+
+
+	// Opening file to save number of iteration and residual
+	std::ofstream SaveResidual;
+	SaveResidual.open(descr.OUTPUT+"Residuals.txt");	
+	
+
+	while (RK && k<max_iteration && err > resSol)
+{
+	//riscrivo la matrice di reazione Rt:
+	vector_type consump_coeff(dof_transp.Ct()); gmm::clear(consump_coeff);
+	vector_type PRESS50(dof_transp.Ct(), PARAM.real_value("Pm_50");
+	gmm::scale(PRESS50, param_transp.alpha_t_); 
+	vector_type c_guess(dof_transp.Ct()); gmm::clear(c_guess);
+	gmm::copy(Ct_old, c_guess);
+	gmm::add(PRESS50, c_guess, consump_coeff);
+
+	//c'è un modo migliore?
+	for (size_type i=0; i<dof_transp.Ct(); i++)
+	{
+	consump_coeff[i] = 1.0/consump_coeff[i];
+	}
+	
+	gmm::scale(consump_coeff, param_transp.m0_);
+
+	//ricalcolo la matrice di reazione come, Rt_temp, e poi la copia in Rt
+	getfem::asm_mass_matrix_param(Rt_temp, mim, mf_c, mf_coef, reac_data, rg); 
+	gmm::copy(Rt_temp, Rt);
+	
+	//OPPURE
+
+	//***riassemblo la matrice monolitica: non posso utilizzare assembly_mat_transp(), devo cambiare Rt --> devo utilizzare le funzioni dentro assembly_mat_transp 
+	//per cambire il coefficiente davanti a Rt;
+	
+	//Build Mt, Dt, Lt and Rt 
+	asm_tissue_transp(Mt, Dt, Lt, Rt_temp, mimt, mf_Ct, mf_coeft,  param_transp.At(), linf_coeff, consump_coeff );
+
+	// Copy Mt: Time Derivative in tissue
+	if(descr_transp.STATIONARY ==0)
+	{ 
+	gmm::scale(Mt, (1.0/param_transp.dt()));
+	gmm::add(Mt,  
+			gmm::sub_matrix(mat_temp, 
+					gmm::sub_interval(0, dof_transp.Ct()), 
+					gmm::sub_interval(0, dof_transp.Ct()))); 
+	}
+	
+		
+	// Check peclet number for instability
+	if((descr_transp.ADVECTION==1) && (peclet_t>1))
+		{ cout<<"WARNING!! Peclet > 1 in tissue: applying artificial diffusion"<<std::endl;	
+	  	  gmm::scale(Dt, (1+peclet_t));}
+	
+	// Copy Dt: diffusion in tissue		  
+	gmm::add(Dt,
+			 gmm::sub_matrix(mat_temp, 
+					gmm::sub_interval(0, dof_transp.Ct()), 
+					gmm::sub_interval(0, dof_transp.Ct())));  
+	
+		
+	// Copy Rt: reaction in tissue
+ 	gmm::add(Rt_temp, 
+			  gmm::sub_matrix(mat_temp, 
+					gmm::sub_interval(0, dof_transp.Ct()), 
+				 	gmm::sub_interval(0, dof_transp.Ct()))); 
+	// Copy Lt: linfatic drainage in tissue
+	 gmm::add(Lt, 
+			  gmm::sub_matrix(mat_temp, 
+					gmm::sub_interval(0, dof_transp.Ct()), 
+				 	gmm::sub_interval(0, dof_transp.Ct()))); 
+
+	gmm::copy(mat_temp, gmm::sub_matrix(AM_transp,
+					gmm::sub_interval(0, dof_transp.Ct()), 
+				 	gmm::sub_interval(0, dof_transp.Ct()))); 
+	//*****FINE riassemblaggio mat_transp nel tessuto
+	
+	
+	//update del rhs
+	
+		size_type shift =0;
+		size_type shift_h=0;
+		scalar_type shift_coef=0;
+		
+		scalar_type k2 = pow((param_transp.Ps_50_*param_transp.alpha_t_),param_transp.delta_);
+		scalar_type k1 = param_transp.N_*param_transp.MCHC_;
+		
+	for(size_type i=0; i<nb_branches; ++i){
+
+		vector_type Hi(mf_Hi[i].nb_dof());
+		scalar_type Ri = param.R(mimv, i);
+		
+		vector_type psi(mf_Hi[i].nb_dof()); gmm::clear(psi);
+		
+		if(i>0) shift_h += mf_Hi[i-1].nb_dof();
+		if(i>0) shift_coef += mf_coefvi[i-1].nb_dof();
+		if(i>0) shift += mf_Uvi[i-1].nb_dof();
+		
+		gmm::copy(Cv_old, cv_guess);
+		
+		nbdof_mfH = mf_Hi[i].nb_dof();
+		cv_i = cv_on_branch(vector_type cv_guess, size_type nbdof_mfH);
+		
+		gmm::copy(gmm::sub_vector(UM_HT, 
+			gmm::sub_interval(shift_h, mf_Hi[i].nb_dof())), Hi);
+			
+		for (size_type i=0; i<mf_Hi[i].nb_dof(); i++)
+		{
+		psi[i] = Hi[i]*k1*pow(cv_i[i], param_transp.delta_)/(pow(cv_i[i], param_transp.delta_)+k2);
+		}
+	
+	asm_hemoadvection_rhs_network(Ov_temp, mimv, mf_Cv, mf_coefvi[i], mf_Uvi[i], mf_Hi[i], Uvi, param.lambdax(i), param.lambday(i), param.lambdaz(i),  param.R(), psi, meshv.region(i));
+	gmm::copy(Ov_temp, Ov);
+
+
+
+	// Solve the new system on AM_transp, UM_transp, FM_temp
+	RK = solve_transp();
+	if(!solve_transp()) {cout<<"non ha risolto il sistema"<<endl; break;} 
+	
+	//salvo la nuova soluzione in: Ct_new = gmm::resize(UM_transp, dof_transp.Ct())
+	gmm::copy(gmm::sub_vector(UM_transp, 
+								gmm::sub_interval(dof_transp.Ct(), dof_transp.Cv())), Cv_new);
+	
+	gmm::copy(gmm::sub_vector(UM_transp, 
+								gmm::sub_interval(0,dof_transp.Ct())), Ct_new);
+								
+
+	//valuto il residuo: 
+	err = estimating_error (Ct_new, Ct_old, Cv_new, Cv_old);
+
+
+	//estimating concentration in the tissue (average) and the reaction coefficient (average)
+	ct = std::accumulate(Ct_new.begin(), Ct_new.end(), 0.0);
+	cv = std::accumulate(Cv_new.begin(), Cv_new.end(), 0.0);
+	Reaction_coeff = std::accumulate(consump_coeff.begin(), consump_coeff.end(), 0.0);
+	
+	cout<<"Concentrazione nel tessuto: "<<ct<<endl;
+	cout<<"Concentrazione nel capillare: "<<cv<<endl;
+	cout<<"Termine di reazione: "<<Reaction_coeff<<endl;
+	
+	if(iteration>max_iteration || err<resSol) break;
+
+	iteration++;
+	gmm::copy(Ct_new,Ct_old);
+	gmm::copy(Cv_new,Cv_new);
+	gmm::clear(mat_temp);
+	gmm::clear(Rt_temp);
+
+//Saving residual values in an output file
+	SaveResidual << iteration << "\t" << resSol << "\t" << resCM << endl;
+
+			if(print_res)  {
+			cout << "Step n°:" << iteration << " Solution Residual = " << resSol << "\t Mass Residual = " << fabs(resCM) << endl;
+			cout << "\t\t\t\t\t\t\t      Time: " <<  ((float)t)/CLOCKS_PER_SEC << " s "<< endl;
+					}
+			cout << "********************************************************" << endl;
+
+	
+	//plotting residuals
+//	RES_SOL[iteration-1]=fabs(resSol);
+// 	gp << "set logscale y; set xlabel 'iteration';set ylabel 'residual'; plot '-' w lines title 'Solution Residual', '-' w lines title 'Mass Conservation Residual'\n";
+// 	gp.send1d(RES_SOL);
+// 	gp.send1d(RES_CM);
+// 	gp.flush();
+	
+	} //Exit the while
+	
+	gmm::copy(Ct_old, gmm::sub_vector(UM_transp,
+					gmm::sub_interval(0, dof_transp.Ct()))); 
+	gmm::copy(Cv_old, gmm::sub_vector(UM_transp,
+					gmm::sub_interval(dof_transp.Ct(), dof_transp.Cv()))); 
+	
+	time_G=clock()-time_G;
+
+	cout<< "Iterative Process Time = " << ((float)time_G)/CLOCKS_PER_SEC << " s"<< endl;
+	SaveResidual.close();
+	if (iter.converged())
+			cout << "  ... converged in " << itearation << " iterations." << endl;
+	else if (iteration == max_iteration)
+			cout << "  ... reached the maximum number of iterations!" << endl;
+	
+	return true;
+
+ } //fine fixpoint_concentration
+
+	
+
+	
+
+
+	

@@ -1,0 +1,195 @@
+bool
+problem3d1d::solve_fixpoint(void)
+{
+/*  solver 
+1- use problem3d1d::solve to obtain the initial guess U0 as starting solution for the iterative method
+2- Declaration of variables
+3- Iterative Process
+			a-update the vector F with the new lymphatic contribution
+			b-1 find the new solution as AM *U(k+1) = F(k)
+			b-2 under-relaxation process U(k+1)= alfa*U(k+1) + (1-alfa)U(k)
+			c-compute lymphatic
+			d-compute TFR
+			e-compute lymphatic total flow rate
+			f-compute totale FR going in or out the interstitial domain
+
+			g- check residuals Rk: the iterative procedure ends when either maximum number of iteration is reached or the residuals of method are less than a pre-established value. 
+			To this purpose TWO RESIDUALS ARE DEFINED:
+				I-solution residual=||ut(k)-ut(k-1)||/||ut(k-1)||+||pt(k)-pt(k-1)||/||pt(k-1)||+||uv(k)-uv(k-1)||/||uv(k-1)||+||pv(k)-pv(k-1)||/||pv(k-1)|| < epsilon1
+					with || V || Euclidean norm
+				II-conservation mass residual \sum_i (Dtt*Ut(k)+Btt*Pt(k)-Btv*Pv(k)+Btv*DeltaPi(k+1)+Mlf*FI(k+1))/TFR < epsilon2
+			h- Update the value of U(k-1) with U(k)
+						-Every N iteration the solution is saved
+
+
+*/
+
+// 1 - solve the problem to obtain U0
+	solve();
+// 2 - declaration of variables
+	vector_type U_new; 
+	vector_type U_old;
+	gmm::resize(U_new, dof.tot()); gmm::clear(U_new);
+	gmm::resize(U_old, dof.tot()); gmm::clear(U_old);
+	vector_type F_new;
+	gmm::resize(F_new, dof.tot()); gmm::clear(F_new);
+	bool print_res=descr.print_residual;
+	scalar_type epsSol=descr.epsSol;
+	scalar_type resSol=epsSol*100;
+	scalar_type epsCM=descr.epsCM;
+	scalar_type resCM=epsCM*100;
+	scalar_type max_iteration=descr.Max_it;
+	int iteration_save=descr.Save_it;
+	int iteration=0;
+	bool RK=1;
+	clock_t t;
+	clock_t time_G;
+	vector_type F_LF;
+	vector_type Uphi(dof.Pv()); 
+	sparse_matrix_type Bvt(dof.Pv(), dof.Pt());
+	sparse_matrix_type Bvv(dof.Pv(), dof.Pv());
+	sparse_matrix_type Btv(dof.Pt(), dof.Pv());
+	vector_type Pt(dof.Pt()); 
+	vector_type Pv(dof.Pv()); 
+	scalar_type Pi_t=param.pi_t();
+	scalar_type Pi_v=param.pi_v();
+	scalar_type sigma=param.sigma();
+	scalar_type picoef;
+        vector_type DeltaPi, Ones(dof.Pv(),1.0);
+	gmm::resize(DeltaPi, dof.Pv()); gmm::clear(DeltaPi);
+        vector_type auxOSt(dof.Pt());
+        vector_type auxOSv(dof.Pv());
+        vector_type auxCM(dof.Pt()); gmm::clear(auxCM);
+	// Gnuplot gp;
+	vector_type RES_SOL(max_iteration), RES_CM(max_iteration);
+
+	// Extracting matrices Bvt, Bvv
+	gmm::copy(gmm::sub_matrix(AM, 
+			gmm::sub_interval(dof.Ut()+dof.Pt()+dof.Uv()	, dof.Pv()),
+			gmm::sub_interval(dof.Ut(), dof.Pt())),
+				Bvt); 
+	gmm::copy(gmm::sub_matrix(AM, 
+			gmm::sub_interval(dof.Ut()+dof.Pt()+dof.Uv(), dof.Pv()), 
+			gmm::sub_interval(dof.Ut()+dof.Pt()+dof.Uv(), dof.Pv())),
+				Bvv);
+	//Extracting matrix Btv
+	gmm::copy(gmm::sub_matrix(AM, 
+			gmm::sub_interval(dof.Ut(), dof.Pt()),
+			gmm::sub_interval(dof.Ut()+dof.Pt()+dof.Uv(), dof.Pv())),
+				Btv);
+	gmm::scale(Btv,-1.0);
+	//Extracting Oncotic term				
+	picoef=sigma*(Pi_v-Pi_t);
+	gmm::copy(Ones, DeltaPi);
+        gmm::scale(DeltaPi,picoef);
+       	gmm::mult(Btv,DeltaPi,auxOSt);
+        gmm::mult(Bvv,DeltaPi,auxOSv);
+
+	// Opening file to save number of iteration and residual
+	std::ofstream SaveResidual;
+	SaveResidual.open(descr.OUTPUT+"Residuals.txt");	
+
+	gmm::copy(UM,U_old);
+
+	time_G=clock();
+	
+while(RK && iteration < max_iteration)
+	{
+
+	gmm::copy(FM,F_new);
+
+	//Adding lymphatic contribution
+	F_new=modify_vector_LF(U_old,F_new);
+	
+	t=clock();
+
+	U_new=iteration_solve(U_old,F_new);
+
+	t=clock()-t;
+
+
+					
+	//Compute Flow Rates
+		// Get lymphatic contribution
+		F_LF=compute_lymphatics(U_new);
+		// Extracting solutions Pt, Pv 
+		gmm::copy(gmm::sub_vector(U_new, 
+			gmm::sub_interval(dof.Ut(), dof.Pt())), Pt);
+		gmm::copy(gmm::sub_vector(U_new, 
+			gmm::sub_interval(dof.Ut()+dof.Pt()+dof.Uv(), dof.Pv())), Pv);
+		// Computing Bvv*Pv - Bvt*Pt
+		gmm::mult(Bvt, Pt, Uphi);
+		gmm::mult_add(Bvv, Pv, Uphi);
+        	//oncotic term
+		picoef=sigma*(Pi_v-Pi_t);
+		gmm::copy(Ones, DeltaPi);
+		gmm::scale(DeltaPi,-1.0);
+        	gmm::scale(DeltaPi,picoef);
+		gmm::mult_add(Bvv, DeltaPi, Uphi);
+		//Computing TFR
+		TFR = std::accumulate(Uphi.begin(), Uphi.end(), 0.0);
+        	//computing flowrate of lymphatic system
+		FRlymph = std::accumulate(F_LF.begin(), F_LF.end(), 0.0);
+        	//computing flowrate from the cube
+        	FRCube = TFR - FRlymph;
+
+		if(RK && iteration < max_iteration && print_res && (iteration % iteration_save) == 0)
+				{
+				export_vtk();
+				cout << "Solution at iteration " << iteration+1 << " saved" << endl;
+				cout << "TFR                 = " << TFR << endl;
+				cout << "Lymphatic Flow Rate = " << FRlymph << endl;
+				cout << "Flow Rate of cube   = " << FRCube << endl;
+				}
+	
+	//Solution residual
+			resSol=calcolo_Rk(U_new, U_old);
+
+	//Conservation of mass residual
+			gmm::mult(gmm::sub_matrix(AM, 
+						gmm::sub_interval(dof.Ut(), dof.Pt()),
+						gmm::sub_interval(0, dof.tot())),
+						U_new,
+							auxCM);
+			gmm::add(auxOSt,auxCM);
+			gmm::add(F_LF,auxCM);	
+			scalar_type resCM=std::accumulate(auxCM.begin(), auxCM.end(), 0.0)/TFR;
+
+	RK=resSol>epsSol || fabs(resCM) > epsCM; // both the residual must reach convergence to exit the "while"
+
+	iteration++;
+	//Saving residual values in an output file
+	SaveResidual << iteration << "\t" << resSol << "\t" << resCM << endl;
+
+			if(print_res)  {
+			cout << "Step n°:" << iteration << " Solution Residual = " << resSol << "\t Mass Residual = " << fabs(resCM) << endl;
+			cout << "\t\t\t\t\t\t\t      Time: " <<  ((float)t)/CLOCKS_PER_SEC << " s "<< endl;
+					}
+			cout << "********************************************************" << endl;
+
+	gmm::copy(U_new,U_old);
+
+	//plotting residuals
+	RES_SOL[iteration-1]=fabs(resSol);
+	RES_CM[iteration-1]=fabs(resCM);
+// 	gp << "set logscale y; set xlabel 'iteration';set ylabel 'residual'; plot '-' w lines title 'Solution Residual', '-' w lines title 'Mass Conservation Residual'\n";
+// 	gp.send1d(RES_SOL);
+// 	gp.send1d(RES_CM);
+// 	gp.flush();
+
+	//De-allocate memory
+	gmm::clear(F_LF);
+	gmm::clear(U_new); gmm::clear(auxCM); gmm::clear(F_new);
+	} //Exit the while
+	
+	gmm::copy(U_old,UM);
+	time_G=clock()-time_G;
+	cout<< "Iterative Process Time = " << ((float)time_G)/CLOCKS_PER_SEC << " s"<< endl;
+	SaveResidual.close();
+	if(RK)
+		cout << "The method has NOT reached convergence for minimum residual" << endl;
+	//De-allocate memory
+	gmm::clear(auxOSt);
+	gmm::clear(auxOSv);
+	return true;
+}

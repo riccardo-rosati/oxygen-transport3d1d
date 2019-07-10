@@ -1,0 +1,38 @@
+vector_type calculating_depsi (Cv_old)
+{
+	vector_type depsi(dof_transp.Cv()); gmm::clear(depsi);
+
+	scalar_type k2 = pow((param_transp.Ps_50_*param_transp.alpha_t_),param_transp.delta_);
+	scalar_type k1 = param_transp.N_*param_transp.MCHC_;
+
+
+	vector_type cv_guess (dof_transp.Cv());
+	gmm::copy(Cv_old, cv_guess);
+
+	vector_type depsi1 ((dof_transp.Cv());
+	vector_type depsi2 ((dof_transp.Cv());
+	vector_type depsi3 ((dof_transp.Cv());
+
+	//in prima approssimazione cosidero l'emtocrito costante
+	//ottengo la concentrazione di ossiemoglobina
+	for (size_type i=0; i<dof_transp.Cv(); i++)
+	{
+	depsi1[i] = gradient(param_transp.Ht_)*k1*pow(cv_guess[i], param_transp.delta_)/(pow(cv_guess[i], param_transp.delta_)+k2);
+	}
+	
+	for (size_type i=0; i<dof_transp.Cv(); i++)
+	{
+	depsi2[i] = gradient(cv_guess)*param_transp.Ht_*k1*pow(cv_guess[i], (param_transp.delta_-1))*param_transp.delta_/(pow(cv_guess[i], param_transp.delta_)+k2);
+	} 
+
+	for (size_type i=0; i<dof_transp.Cv(); i++)
+	{
+	depsi3[i] = gradient(cv_guess)*param_transp.Ht_*k1*pow(cv_guess[i], (param_transp.delta_-1))*pow(cv_guess[i], param_transp.delta_)*param_transp.delta_/pow((pow(cv_guess[i], param_transp.delta_)+k2),2);
+	}
+
+	gmm::add(depsi1, depsi);
+	gmm::add(depsi2, depsi);
+	gmm::add(-depsi3, depsi);
+
+	return depsi;
+}

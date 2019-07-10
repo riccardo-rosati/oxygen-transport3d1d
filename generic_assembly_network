@@ -1,0 +1,43 @@
+//! Build the source term on the rhs
+/*
+	@param O         Oxyhemoglobin advection matrix
+	@param mim       The integration method to be used
+	@param mf_c      The finite element method for the concentration @f$ c @f$
+	@param mf_data   The finite element method for the the phi(Cv)
+	@param mf_u      The finite element method for the advection field  @f$ u @f$
+	@param mf_R	 The finite element method for the network radii
+	@param U         The advection field
+	@param rg        The region where to integrate
+
+	@ingroup asm
+ */ 
+ 
+template<typename MAT, typename VEC>
+void 
+asm_advection_network
+	(VEC & O,
+	 const mesh_im & mim,
+	 const mesh_fem & mf_c
+	 const mesh_fem & mf_data,	//mesh su cuid definisco gli input, ottenuti da phi(Cv)
+	 const mesh_fem & mf_u,
+	 const VEC & phi
+	 const VEC & U,
+	 const mesh_region & rg = mesh_region::all_convexes()
+	 ) 	
+	 
+	 {
+
+	generic_assembly 
+	assem("u=data$1(#3); phi=data$2(#2);"
+		  "t=comp(Base(#3).Grad(#1).Base(#1));"
+		  "M$1(#1,#1)+=t(:,i,j).phi(n)");
+	assem.push_mi(mim);
+	assem.push_mf(mf_c);
+	assem.push_mf(mf_data);
+	assem.push_mf(mf_u);
+	assem.push_data(U);
+	assem.push_mat(O);
+	assem.assembly(rg);
+	
+	
+} //end of asm_advection_network

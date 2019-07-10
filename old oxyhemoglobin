@@ -1,0 +1,33 @@
+vector_type calculating_psi (Cv_old)
+{
+vector_type psi(dof_transp.Cv()); gmm::clear(phi);
+	
+	vector_type PRESSV (dof_transp.Cv(), PARAM.real_value("Ps_50","Partial Pressure of oxygen at half saturation [mmHg]"));
+	gmm::scale(PRESSV, param_transp.alpha_pl_);
+	vector_type k2 (dof_transp.Cv()); gmm::clear(k2);	
+	for (size_type i=0; i<dof_transp.Cv(); i++)
+	{
+	k2[i] = pow(PRESSV[i], param_transp.delta_);
+	}
+	
+	vector_type cv_guess (dof_transp.Cv(), param_transp.Cv0_);
+	for (size_type i=0; i<dof_transp.Cv(); i++)
+	{
+	cv_guess[i] = pow(cv_guess[i], param_transp.delta_);	
+	}
+
+	gmm::add(k2 , cv_guess, psi);
+	
+	//c'è un modo migliore?
+	for (size_type i=0; i<dof_transp.Cv(); i++)
+	{
+	psi[i] = 1.0/psi[i];	
+	}
+	
+	
+	scalar_type k1 = (pow(cv_guess, param_transp.delta_))*param_transp.N_*param_transp.MCHC_;
+	gmm::scale(psi, k1);
+	//in prima approssimazione considero l'eamtocrito costante (idipendente dal raggio)
+	gmm::scale(phi, param_transp.Ht_);	//ottengo la ceoncentrazione di ossiemoglobina
+}
+	
